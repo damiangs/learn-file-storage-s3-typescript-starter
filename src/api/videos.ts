@@ -45,12 +45,52 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const tempFilePath = path.join("/tmp", `${videoId}.mp4`);
   await Bun.write(tempFilePath, file);
 
-  const key = `${videoId}.mp4`;
-  await uploadVideoToS3(cfg, `${videoId}.mp4`, tempFilePath, mediaType);
+  const aspectRatio = await getVideoAspectRatio(tempFilePath);
+
+  const key = `${aspectRatio}/${videoId}.mp4`;
+  await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
   video.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
   updateVideo(cfg.db, video);
 
   await rm(tempFilePath, { force: true });
 
   return respondWithJSON(200, video);
+}
+
+export async function getVideoAspectRatio(filePath: string) {
+  const proc = Bun.spawn(
+    [
+      "ffprobe",
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "json",
+      filePath,
+    ],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+
+  const stdoutText = await new Response(proc.stdout).text();
+  const stderrText = await new Response(proc.stderr).text();
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    throw new Error(`ffprobe failed: ${stderrText}`);
+  }
+
+  const output = JSON.parse(stdoutText);
+  const { width, height } = output.streams[0];
+
+  return width === Math.floor((16 / 9) * height)
+    ? "landscape"
+    : height === Math.floor((16 / 9) * width)
+      ? "portrait"
+      : "other";
 }
