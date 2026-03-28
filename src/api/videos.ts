@@ -47,18 +47,21 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 
   const aspectRatio = await getVideoAspectRatio(tempFilePath);
 
+  const processedFilePath = await processVideoForFastStart(tempFilePath);
+
   const key = `${aspectRatio}/${videoId}.mp4`;
-  await uploadVideoToS3(cfg, key, tempFilePath, mediaType);
+  await uploadVideoToS3(cfg, key, processedFilePath, mediaType);
   video.videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
   updateVideo(cfg.db, video);
 
   await rm(tempFilePath, { force: true });
+  await rm(processedFilePath, { force: true });
 
   return respondWithJSON(200, video);
 }
 
 export async function getVideoAspectRatio(filePath: string) {
-  const proc = Bun.spawn(
+  const process = Bun.spawn(
     [
       "ffprobe",
       "-v",
@@ -77,10 +80,10 @@ export async function getVideoAspectRatio(filePath: string) {
     },
   );
 
-  const stdoutText = await new Response(proc.stdout).text();
-  const stderrText = await new Response(proc.stderr).text();
+  const stdoutText = await new Response(process.stdout).text();
+  const stderrText = await new Response(process.stderr).text();
 
-  const exitCode = await proc.exited;
+  const exitCode = await process.exited;
   if (exitCode !== 0) {
     throw new Error(`ffprobe failed: ${stderrText}`);
   }
@@ -93,4 +96,35 @@ export async function getVideoAspectRatio(filePath: string) {
     : height === Math.floor((16 / 9) * width)
       ? "portrait"
       : "other";
+}
+
+export async function processVideoForFastStart(inputFilePath: string) {
+  const processedFilePath = `${inputFilePath}.processed.mp4`;
+
+  const process = Bun.spawn(
+    [
+      "ffmpeg",
+      "-i",
+      inputFilePath,
+      "-movflags",
+      "faststart",
+      "-map_metadata",
+      "0",
+      "-codec",
+      "copy",
+      "-f",
+      "mp4",
+      processedFilePath,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+
+  const stderrText = await new Response(process.stderr).text();
+
+  const exitCode = await process.exited;
+  if (exitCode !== 0) {
+    throw new Error(`ffmpeg failed: ${stderrText}`);
+  }
+
+  return processedFilePath;
 }
